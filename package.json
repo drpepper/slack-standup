@@ -1,0 +1,16 @@
+{
+  "name": "slack-standup",
+  "version": "1.0.0",
+  "description": "Slack app for randomizing standup speaking order",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.21.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
