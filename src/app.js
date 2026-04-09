@@ -28,11 +28,28 @@ const app = new App({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract user IDs from slash command text like "@U123 @U456 plain-name". */
-function parseUserMentions(text) {
-  // Slack encodes mentions as <@UID> or <@UID|displayname>
-  const mentions = [...text.matchAll(/<@([A-Z0-9]+)(?:\|[^>]+)?>/g)].map((m) => m[1]);
-  return mentions;
+/**
+ * Parse participants from slash command text.
+ * Supports @mentions (extracted as Slack user IDs) and plain text names.
+ * e.g. "/standup @alice j r" → ['U123ABC', 'j', 'r']
+ */
+function parseParticipants(text) {
+  const participants = [];
+  // Replace mentions with their UID and collect them
+  const withoutMentions = text.replace(/<@([A-Z0-9]+)(?:\|[^>]+)?>/g, (_, uid) => {
+    participants.push(uid);
+    return '';
+  });
+  // Remaining whitespace-separated tokens are plain names
+  for (const token of withoutMentions.trim().split(/\s+/)) {
+    if (token) participants.push(token);
+  }
+  return participants;
+}
+
+/** Extract only Slack user IDs from @mentions (for add/remove subcommands). */
+function parseMentionsOnly(text) {
+  return [...text.matchAll(/<@([A-Z0-9]+)(?:\|[^>]+)?>/g)].map((m) => m[1]);
 }
 
 /**
@@ -125,6 +142,8 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
 
   log(`/standup channel=${channelId} user=${userId} text=${JSON.stringify(raw)}`);
 
+  try {
+
   // ── next ──────────────────────────────────────────────────────────────────
   if (lower === 'next') {
     const sess = session.get(channelId);
@@ -180,9 +199,9 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
       await respond({ text: errorText('No standup in progress.'), response_type: 'ephemeral' });
       return;
     }
-    const uids = parseUserMentions(raw.slice(4));
+    const uids = parseParticipants(raw.slice(4));
     if (uids.length === 0) {
-      await respond({ text: errorText('Please mention a user, e.g. `/standup add @alice`.'), response_type: 'ephemeral' });
+      await respond({ text: errorText('Please specify a user, e.g. `/standup add @alice` or `/standup add j`.'), response_type: 'ephemeral' });
       return;
     }
     log(`/standup add: channel=${channelId} users=${uids}`);
@@ -204,9 +223,9 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
       await respond({ text: errorText('No standup in progress.'), response_type: 'ephemeral' });
       return;
     }
-    const uids = parseUserMentions(raw.slice(7));
+    const uids = parseParticipants(raw.slice(7));
     if (uids.length === 0) {
-      await respond({ text: errorText('Please mention a user, e.g. `/standup remove @alice`.'), response_type: 'ephemeral' });
+      await respond({ text: errorText('Please specify a user, e.g. `/standup remove @alice` or `/standup remove j`.'), response_type: 'ephemeral' });
       return;
     }
     log(`/standup remove: channel=${channelId} users=${uids}`);
@@ -239,7 +258,7 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
     messageTs.delete(channelId);
   }
 
-  let userIds = parseUserMentions(raw);
+  let userIds = parseParticipants(raw);
 
   if (userIds.length === 0) {
     // No users listed — grab active channel members
@@ -281,6 +300,11 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
     throw err;
   }
   messageTs.set(channelId, msg.ts);
+
+  } catch (err) {
+    logError(`/standup handler failed:`, err);
+    await respond({ text: errorText(`Something went wrong: ${err.message}`), response_type: 'ephemeral' }).catch(() => {});
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -317,6 +341,10 @@ app.action('standup_end', async ({ ack, body, client }) => {
   session.end(channelId);
   messageTs.delete(channelId);
   await updateStandupMessage(client, channelId, ts, null, true);
+});
+
+app.error(async (error) => {
+  logError('Unhandled error:', error);
 });
 
 // ---------------------------------------------------------------------------
