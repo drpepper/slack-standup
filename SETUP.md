@@ -37,12 +37,11 @@ No public URL or server required — Socket Mode connects outbound to Slack.
 ## 4. Run
 
 ```sh
-npm install
-npm start        # production
-npm run dev      # auto-reload on file changes (Node 18+)
+go build -o standup ./cmd/standup
+./standup
 ```
 
-You should see `⚡ Standup bot running (Socket Mode)` in the console. The bot is now live.
+You should see `Bot ready (Socket Mode)` in the console. The bot is now live.
 
 <details>
 <summary>HTTP Mode (alternative — if you have a public server)</summary>
@@ -58,8 +57,9 @@ You should see `⚡ Standup bot running (Socket Mode)` in the console. The bot i
 
 | Command | Effect |
 |---|---|
-| `/standup` | Start standup with active channel members |
-| `/standup @alice @bob @carol` | Start with specific people (random order) |
+| `/standup` | Show available commands |
+| `/standup start` | Start standup with active channel members |
+| `/standup start @alice @bob @carol` | Start with specific people (random order) |
 | `/standup next` | Advance to next speaker |
 | `/standup add @dave` | Add someone to the remaining order |
 | `/standup remove @bob` | Remove someone from the remaining order |
