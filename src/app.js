@@ -2,8 +2,21 @@ require('dotenv').config();
 const { App } = require('@slack/bolt');
 const session = require('./session');
 const { standupBlocks, errorText } = require('./blocks');
+const { parseParticipants, parseMentionsOnly } = require('./parse');
 
 const socketMode = !!process.env.SLACK_APP_TOKEN;
+
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+
+function log(...args) {
+  console.log(new Date().toISOString(), '[standup]', ...args);
+}
+
+function logError(...args) {
+  console.error(new Date().toISOString(), '[standup][ERROR]', ...args);
+}
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -16,12 +29,6 @@ const app = new App({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract user IDs from slash command text like "@U123 @U456 plain-name". */
-function parseUserMentions(text) {
-  // Slack encodes mentions as <@UID> or <@UID|displayname>
-  const mentions = [...text.matchAll(/<@([A-Z0-9]+)(?:\|[^>]+)?>/g)].map((m) => m[1]);
-  return mentions;
-}
 
 /**
  * Fetch all human, non-bot members of a channel.
@@ -36,13 +43,18 @@ async function fetchChannelMembers(client, channelId) {
     cursor = res.response_metadata?.next_cursor;
   } while (cursor);
 
+  log(`fetchChannelMembers: ${members.length} raw members in ${channelId}`);
+
   // Filter out bots and the bot user itself
   const profiles = await Promise.all(
     members.map((uid) => client.users.info({ user: uid }).catch(() => null))
   );
-  return profiles
+  const human = profiles
     .filter((p) => p?.ok && !p.user.is_bot && !p.user.deleted)
     .map((p) => p.user.id);
+
+  log(`fetchChannelMembers: ${human.length} human members after filtering`);
+  return human;
 }
 
 /**
@@ -57,6 +69,7 @@ async function filterActiveMembers(client, userIds) {
     const r = results[i];
     return r.status === 'fulfilled' && r.value.presence === 'active';
   });
+  log(`filterActiveMembers: ${active.length}/${userIds.length} active`);
   return active.length > 0 ? active : userIds; // fallback: all members
 }
 
@@ -101,8 +114,13 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
   await ack();
 
   const channelId = command.channel_id;
+  const userId = command.user_id;
   const raw = (command.text || '').trim();
   const lower = raw.toLowerCase();
+
+  log(`/standup channel=${channelId} user=${userId} text=${JSON.stringify(raw)}`);
+
+  try {
 
   // ── next ──────────────────────────────────────────────────────────────────
   if (lower === 'next') {
@@ -112,6 +130,7 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
       return;
     }
     const updated = session.next(channelId);
+    log(`/standup next: channel=${channelId} remaining=${updated?.remaining?.length ?? 0}`);
     const ts = messageTs.get(channelId);
     if (ts) {
       await updateStandupMessage(client, channelId, ts, updated, !updated);
@@ -126,6 +145,7 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
 
   // ── end ───────────────────────────────────────────────────────────────────
   if (lower === 'end') {
+    log(`/standup end: channel=${channelId}`);
     session.end(channelId);
     const ts = messageTs.get(channelId);
     messageTs.delete(channelId);
@@ -144,6 +164,7 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
       await respond({ text: errorText('No standup in progress.'), response_type: 'ephemeral' });
       return;
     }
+    log(`/standup status: channel=${channelId}`);
     const msg = await postStandupMessage(client, channelId, sess);
     messageTs.set(channelId, msg.ts);
     return;
@@ -156,11 +177,12 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
       await respond({ text: errorText('No standup in progress.'), response_type: 'ephemeral' });
       return;
     }
-    const uids = parseUserMentions(raw.slice(4));
+    const uids = parseParticipants(raw.slice(4));
     if (uids.length === 0) {
-      await respond({ text: errorText('Please mention a user, e.g. `/standup add @alice`.'), response_type: 'ephemeral' });
+      await respond({ text: errorText('Please specify a user, e.g. `/standup add @alice` or `/standup add j`.'), response_type: 'ephemeral' });
       return;
     }
+    log(`/standup add: channel=${channelId} users=${uids}`);
     let updated = sess;
     for (const uid of uids) updated = session.add(channelId, uid) ?? updated;
     const ts = messageTs.get(channelId);
@@ -179,11 +201,12 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
       await respond({ text: errorText('No standup in progress.'), response_type: 'ephemeral' });
       return;
     }
-    const uids = parseUserMentions(raw.slice(7));
+    const uids = parseParticipants(raw.slice(7));
     if (uids.length === 0) {
-      await respond({ text: errorText('Please mention a user, e.g. `/standup remove @alice`.'), response_type: 'ephemeral' });
+      await respond({ text: errorText('Please specify a user, e.g. `/standup remove @alice` or `/standup remove j`.'), response_type: 'ephemeral' });
       return;
     }
+    log(`/standup remove: channel=${channelId} users=${uids}`);
     let updated = sess;
     let done = false;
     for (const uid of uids) {
@@ -202,23 +225,35 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
   }
 
   // ── start ─────────────────────────────────────────────────────────────────
-  // If there's already a session, warn before overwriting
+  log(`/standup start: channel=${channelId}`);
+
+  // If there's already a session, overwrite silently
   if (session.get(channelId)) {
-    // Overwrite silently — user explicitly called /standup again
     const ts = messageTs.get(channelId);
     if (ts) {
-      // Mark old message as ended
       await updateStandupMessage(client, channelId, ts, null, true).catch(() => {});
     }
     messageTs.delete(channelId);
   }
 
-  let userIds = parseUserMentions(raw);
+  let userIds = parseParticipants(raw);
 
   if (userIds.length === 0) {
     // No users listed — grab active channel members
     await respond({ text: ':hourglass: Fetching active channel members…', response_type: 'ephemeral' });
-    const members = await fetchChannelMembers(client, channelId);
+    let members;
+    try {
+      members = await fetchChannelMembers(client, channelId);
+    } catch (err) {
+      if (err.data?.error === 'not_in_channel') {
+        await respond({
+          text: ":wave: I'm not in this channel. Please invite me with `/invite @<bot-name>`, then run `/standup` again.",
+          response_type: 'ephemeral',
+        });
+        return;
+      }
+      throw err;
+    }
     userIds = await filterActiveMembers(client, members);
     if (userIds.length === 0) {
       await respond({ text: errorText('No active members found in this channel.'), response_type: 'ephemeral' });
@@ -226,9 +261,28 @@ app.command('/standup', async ({ command, ack, respond, client, say }) => {
     }
   }
 
+  log(`/standup start: channel=${channelId} users=${userIds}`);
   const sess = session.start(channelId, userIds);
-  const msg = await postStandupMessage(client, channelId, sess);
+  let msg;
+  try {
+    msg = await postStandupMessage(client, channelId, sess);
+  } catch (err) {
+    if (err.data?.error === 'not_in_channel') {
+      await respond({
+        text: ":wave: I'm not in this channel. Please invite me with `/invite @<bot-name>`, then run `/standup` again.",
+        response_type: 'ephemeral',
+      });
+      session.end(channelId);
+      return;
+    }
+    throw err;
+  }
   messageTs.set(channelId, msg.ts);
+
+  } catch (err) {
+    logError(`/standup handler failed:`, err);
+    await respond({ text: errorText(`Something went wrong: ${err.message}`), response_type: 'ephemeral' }).catch(() => {});
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -239,6 +293,9 @@ app.action('standup_next', async ({ ack, body, client }) => {
   await ack();
   const channelId = body.channel.id;
   const ts = body.message.ts;
+  const userId = body.user.id;
+
+  log(`action standup_next: channel=${channelId} user=${userId}`);
 
   const sess = session.get(channelId);
   if (!sess) {
@@ -255,10 +312,17 @@ app.action('standup_end', async ({ ack, body, client }) => {
   await ack();
   const channelId = body.channel.id;
   const ts = body.message.ts;
+  const userId = body.user.id;
+
+  log(`action standup_end: channel=${channelId} user=${userId}`);
 
   session.end(channelId);
   messageTs.delete(channelId);
   await updateStandupMessage(client, channelId, ts, null, true);
+});
+
+app.error(async (error) => {
+  logError('Unhandled error:', error);
 });
 
 // ---------------------------------------------------------------------------
@@ -266,10 +330,21 @@ app.action('standup_end', async ({ ack, body, client }) => {
 // ---------------------------------------------------------------------------
 
 (async () => {
+  log('Starting standup bot…');
+  log(`Mode: ${socketMode ? 'Socket Mode' : 'HTTP'}`);
+  log(`SLACK_BOT_TOKEN set: ${!!process.env.SLACK_BOT_TOKEN}`);
+  log(`SLACK_APP_TOKEN set: ${!!process.env.SLACK_APP_TOKEN}`);
+  log(`SLACK_SIGNING_SECRET set: ${!!process.env.SLACK_SIGNING_SECRET}`);
+  if (!socketMode) log(`Port: ${process.env.PORT || 3000}`);
+
   await app.start();
+
   if (socketMode) {
-    console.log('⚡ Standup bot running (Socket Mode)');
+    log('Bot ready (Socket Mode)');
   } else {
-    console.log(`⚡ Standup bot running on port ${process.env.PORT || 3000}`);
+    log(`Bot ready on port ${process.env.PORT || 3000}`);
   }
-})();
+})().catch((err) => {
+  logError('Failed to start:', err);
+  process.exit(1);
+});

@@ -19,10 +19,11 @@ function standupBlocks(session, done = false) {
   }
 
   const { order, current } = session;
-  const lines = order.map((uid, i) => {
-    if (i < current) return `:white_check_mark: ~<@${uid}>~`;
-    if (i === current) return `:speaking_head_in_silhouette: *<@${uid}>* ← up now`;
-    return `${i + 1 - current}. <@${uid}>`;
+  const fmt = (id) => /^[A-Z][A-Z0-9]+$/.test(id) ? `<@${id}>` : id;
+  const lines = order.map((id, i) => {
+    if (i < current) return `:white_check_mark: ~${fmt(id)}~`;
+    if (i === current) return `:speaking_head_in_silhouette: *${fmt(id)}* ← up now`;
+    return `${i + 1 - current}. ${fmt(id)}`;
   });
 
   const remaining = order.length - current;

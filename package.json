@@ -5,10 +5,12 @@
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
-    "dev": "node --watch src/app.js"
+    "dev": "node --watch src/app.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@slack/bolt": "^3.21.1"
+    "@slack/bolt": "^4.7.0",
+    "dotenv": "^17.4.1"
   },
   "engines": {
     "node": ">=18"
