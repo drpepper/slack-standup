@@ -37,7 +37,7 @@ No public URL or server required — Socket Mode connects outbound to Slack.
 ## 4. Run
 
 ```sh
-go build -o standup ./cmd/standup
+go build -o standup .
 ./standup
 ```
 

@@ -13,7 +13,7 @@ A Slack bot that randomizes the speaking order for standups. Use the `/standup` 
 
 ```sh
 cp .env.example .env   # then fill in your Slack tokens
-go build -o standup ./cmd/standup
+go build -o standup 
 ./standup
 ```
 
